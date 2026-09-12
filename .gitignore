@@ -27,10 +27,9 @@ go/build/
 *.swp
 *.swo
 
-# Environment files
+# Environment files - DO NOT COMMIT (contains secrets)
 .env
 .env.local
-*.env
 
 # Logs
 *.log
