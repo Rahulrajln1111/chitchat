@@ -1,38 +1,47 @@
-HELP.md
-target/
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+# Compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+chitchat-server
+server
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
+# Test binary
+*.test
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
+# Output of go coverage
+*.out
+coverage.html
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
+# Dependency directories
+vendor/
+go.work
 
-### VS Code ###
+# Go build cache
+go/build/
+
+# IDE
+.idea/
 .vscode/
+*.swp
+*.swo
 
+# Environment files
+.env
+.env.local
+*.env
 
-src/main/resources/application.properties
-!src/main/resources/application.properties.example
-!src/test/resources/application.properties
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Keep Maven stuff for reference but ignore build artifacts
+target/
+*.jar
+
+# Keep application.properties.example but ignore actual properties (contains secrets)
+application.properties

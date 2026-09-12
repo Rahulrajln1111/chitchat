@@ -1,7 +1,16 @@
 #!/bin/bash
-# Production launcher. NOTE: do NOT add -Xmx/-Xms here — each box is
-# cgroup-capped at 512MB RAM and the JVM sizes its heap from that
-# automatically (25% => ~128MB). A fixed -Xmx above the cap gets the
-# process OOM-killed at boot. Run from the repo root. Extra args
-# (e.g. --server.port=XXXX) are forwarded to Spring Boot.
-exec java -jar target/chitchat-0.0.1-SNAPSHOT.jar "$@"
+# Production launcher for Go backend
+# Builds and runs the Go server
+# Run from the repo root. Extra args are forwarded.
+
+set -e
+
+cd "$(dirname "$0")"
+
+# Build the Go binary
+echo "Building Go server..."
+go build -o chitchat-server ./cmd/server
+
+# Run the server
+echo "Starting Go server on port 3000..."
+exec ./chitchat-server "$@"
