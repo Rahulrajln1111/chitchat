@@ -7,12 +7,29 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Rahulrajln1111/chitchat/internal/db"
 	"github.com/Rahulrajln1111/chitchat/internal/ingest"
 	"github.com/Rahulrajln1111/chitchat/internal/models"
 )
+
+// Log throttling: under a stall every canceled request used to log a line
+// (165k lines in 30 min filled an 11GB log -> disk-full -> journal writes
+// fail -> 500s). Log at most one line per interval per site.
+var lastFeedErrNano int64
+
+func logThrottled(nano *int64, format string, args ...interface{}) {
+	now := time.Now().UnixNano()
+	last := atomic.LoadInt64(nano)
+	if now-last < int64(5*time.Second) {
+		return
+	}
+	if atomic.CompareAndSwapInt64(nano, last, now) {
+		log.Printf(format, args...)
+	}
+}
 
 // Handler holds the HTTP handlers
 type Handler struct {
@@ -76,7 +93,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	messages, err := db.GetAllMessages(ctx)
 	if err != nil {
-		log.Printf("Error fetching messages: %v", err)
+		logThrottled(&lastFeedErrNano, "Error fetching messages: %v", err)
 		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 		return
 	}
@@ -97,7 +114,7 @@ func (h *Handler) GetRoomMessages(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		messages, err := db.GetAllMessages(ctx)
 		if err != nil {
-			log.Printf("Error fetching messages: %v", err)
+			logThrottled(&lastFeedErrNano, "Error fetching messages: %v", err)
 			http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 			return
 		}
@@ -122,7 +139,7 @@ func (h *Handler) GetRoomMessages(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	messages, err := db.GetAllMessages(ctx)
 	if err != nil {
-		log.Printf("Error fetching messages: %v", err)
+		logThrottled(&lastFeedErrNano, "Error fetching messages: %v", err)
 		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
 		return
 	}
