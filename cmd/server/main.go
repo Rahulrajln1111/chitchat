@@ -88,7 +88,8 @@ func main() {
 	// Static files (frontend) - serve from ./chitchat-frontend/dist
 	frontendDir := os.Getenv("FRONTEND_DIR")
 	if frontendDir == "" {
-		frontendDir = "/home/razz/Desktop/D/Sd/chitchat-frontend/dist"
+		// Relative to the directory the server is started from (~/ on the VMs)
+		frontendDir = "./chitchat-frontend/dist"
 	}
 
 	// Load test routes
