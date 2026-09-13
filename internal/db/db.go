@@ -3,11 +3,13 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 var db *sql.DB
@@ -15,15 +17,18 @@ var db *sql.DB
 // Init initializes the PostgreSQL connection
 func Init(connectionString string) error {
 	var err error
-	// Remove pgx-specific params, use standard lib/pq format
 	connStr := connectionString
 	if connStr == "" {
 		connStr = "postgres://chitchat:secret123@localhost:5432/chitchat?sslmode=disable"
 	}
-	
+	// pgx stdlib is registered as "pgx" and accepts the same URL/keyword DSNs.
+	// Replaces lib/pq: less memory per connection, faster row scanning,
+	// and better throughput for large multi-row batch INSERTs.
+	driver := "pgx"
+
 	log.Printf("Connecting to database with: %s...", connStr[:min(50, len(connStr))])
-	
-	db, err = sql.Open("postgres", connStr)
+
+	db, err = sql.Open(driver, connStr)
 	if err != nil {
 		return fmt.Errorf("unable to open database: %w", err)
 	}
@@ -88,13 +93,17 @@ func InsertMessage(ctx context.Context, id string, clientName, msg string, times
 	return err
 }
 
-// GetAllMessages returns all messages ordered by ID ascending
-func GetAllMessages(ctx context.Context) ([]struct {
+// FeedMessage is the JSON shape of one /feed row.
+type FeedMessage struct {
 	ID         string    `json:"id"`
 	ClientName string    `json:"clientName"`
 	Msg        string    `json:"msg"`
 	Timestamp  time.Time `json:"timestamp"`
-}, error) {
+}
+
+// GetAllMessages returns all messages ordered by timestamp ascending.
+// Still used by room-message endpoints; /feed uses StreamAllMessages.
+func GetAllMessages(ctx context.Context) ([]FeedMessage, error) {
 	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY "timestamp" ASC, id ASC`
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
@@ -102,27 +111,59 @@ func GetAllMessages(ctx context.Context) ([]struct {
 	}
 	defer rows.Close()
 
-	messages := make([]struct {
-		ID         string    `json:"id"`
-		ClientName string    `json:"clientName"`
-		Msg        string    `json:"msg"`
-		Timestamp  time.Time `json:"timestamp"`
-	}, 0)
-
+	messages := make([]FeedMessage, 0)
 	for rows.Next() {
-		var m struct {
-			ID         string    `json:"id"`
-			ClientName string    `json:"clientName"`
-			Msg        string    `json:"msg"`
-			Timestamp  time.Time `json:"timestamp"`
-		}
+		var m FeedMessage
 		if err := rows.Scan(&m.ID, &m.ClientName, &m.Msg, &m.Timestamp); err != nil {
 			return nil, err
 		}
 		messages = append(messages, m)
 	}
-
 	return messages, rows.Err()
+}
+
+// StreamAllMessages writes /feed as a JSON array straight to w, row by row.
+// O(1) buffering vs GetAllMessages' full-slice + json.Encode double
+// buffering — at 40k+ rows that removes two large allocations per request
+// on 1-core VMs.
+func StreamAllMessages(ctx context.Context, w io.Writer) error {
+	if _, err := io.WriteString(w, "["); err != nil {
+		return err
+	}
+	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY "timestamp" ASC, id ASC`
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		// Emit a valid empty array on early failure.
+		_, werr := io.WriteString(w, "]")
+		if werr != nil {
+			return werr
+		}
+		return err
+	}
+	defer rows.Close()
+
+	enc := json.NewEncoder(w)
+	first := true
+	for rows.Next() {
+		var m FeedMessage
+		if err := rows.Scan(&m.ID, &m.ClientName, &m.Msg, &m.Timestamp); err != nil {
+			return err
+		}
+		if !first {
+			if _, err := io.WriteString(w, ","); err != nil {
+				return err
+			}
+		}
+		first = false
+		if err := enc.Encode(m); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, "]")
+	return err
 }
 
 // PurgeOldMessages deletes messages older than the specified duration

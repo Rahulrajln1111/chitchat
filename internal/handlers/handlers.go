@@ -90,16 +90,12 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 
 // GetFeed handles GET /feed
 func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	messages, err := db.GetAllMessages(ctx)
-	if err != nil {
-		logThrottled(&lastFeedErrNano, "Error fetching messages: %v", err)
-		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(messages)
+	// Stream rows straight to the socket: O(1) memory, no full-slice
+	// materialization even with 40k+ rows in the table.
+	if err := db.StreamAllMessages(r.Context(), w); err != nil {
+		logThrottled(&lastFeedErrNano, "Error streaming feed: %v", err)
+	}
 }
 
 // GetRoomMessages handles GET /room/<roomId>/messages
@@ -120,7 +116,7 @@ func (h *Handler) GetRoomMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"messages": messages,
+			"messages":  messages,
 			"timestamp": time.Now().Unix(),
 		})
 		return
