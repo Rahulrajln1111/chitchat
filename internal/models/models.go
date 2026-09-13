@@ -13,7 +13,9 @@ type LoadTestMessage struct {
 }
 
 // LoadTestMessageRequest is the JSON body for POST /message
+// ("id" is optional - client may supply for idempotent retries)
 type LoadTestMessageRequest struct {
 	ClientName string `json:"client-name"`
 	Msg        string `json:"msg"`
+	ID         string `json:"id,omitempty"`
 }

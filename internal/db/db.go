@@ -63,6 +63,22 @@ func GetDB() *sql.DB {
 	return db
 }
 
+// InsertMessageIdempotent inserts a new message; if the id already exists it is
+// a no-op (assignment: prevent duplicate insertion on retries/reconnects).
+// Returns true if a new row was inserted, false for duplicate ids.
+func InsertMessageIdempotent(ctx context.Context, id string, clientName, msg string, timestamp time.Time) (bool, error) {
+	query := `INSERT INTO load_test_messages(id, client_name, msg, "timestamp") VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING`
+	result, err := db.ExecContext(ctx, query, id, clientName, msg, timestamp)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 // InsertMessage inserts a new message into the database
 func InsertMessage(ctx context.Context, id string, clientName, msg string, timestamp time.Time) error {
 	query := `INSERT INTO load_test_messages(id, client_name, msg, "timestamp") VALUES ($1, $2, $3, $4)`

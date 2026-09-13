@@ -95,6 +95,12 @@ func main() {
 	mux.HandleFunc("/message", messageHandler.PostMessage)
 	mux.HandleFunc("/feed", messageHandler.GetFeed)
 
+	// Health endpoint for LB probes (cheap, no DB access)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
 	// Chat message history — EXACT Java routes
 	mux.HandleFunc("/rooms/", msgSvc.HandleRoomMessages) // /rooms/{roomId}/messages/recent
 

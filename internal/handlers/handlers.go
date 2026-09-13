@@ -22,6 +22,9 @@ func NewHandler() *Handler {
 }
 
 // PostMessage handles POST /message
+// Contract: accepts "client-name" and "msg" (JSON body). Optional "id" for
+// client-side idempotency: retries with the same id are stored once (assignment
+// requires no duplicate insertions on retries/reconnects).
 func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	var req models.LoadTestMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -38,26 +41,34 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate UUID
-	id := generateUUID()
+	// Use client-supplied id if present (idempotent retries), else generate UUID v4
+	id := req.ID
+	if id == "" {
+		id = generateUUID()
+	}
 
-	// Insert into database
+	// Insert with ON CONFLICT DO NOTHING: duplicate IDs from retries are stored
+	// once; response is still 200 so load-generator retries are not penalized.
 	ctx := r.Context()
-	err := db.InsertMessage(ctx, id, req.ClientName, req.Msg, time.Now())
+	inserted, err := db.InsertMessageIdempotent(ctx, id, req.ClientName, req.Msg, time.Now())
 	if err != nil {
 		log.Printf("Error inserting message: %v", err)
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
+		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Duplicate message ID",
+			"error": "storage failure",
 		})
 		return
 	}
 
+	status := "stored"
+	if !inserted {
+		status = "duplicate" // already persisted from an earlier attempt
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":     id,
-		"status": "stored",
+		"status": status,
 	})
 }
 
