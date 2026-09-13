@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Rahulrajln1111/chitchat/internal/auth"
+	"github.com/Rahulrajln1111/chitchat/internal/messages"
+	"github.com/Rahulrajln1111/chitchat/internal/websocket"
 	"github.com/google/uuid"
 )
 
@@ -17,13 +19,15 @@ import (
 type RoomHandler struct {
 	db        *sql.DB
 	jwtSecret string
+	msgSvc    *messages.Service
 }
 
 // NewRoomHandler creates a new room handler
-func NewRoomHandler(db *sql.DB) *RoomHandler {
+func NewRoomHandler(database *sql.DB, msgSvc *messages.Service) *RoomHandler {
 	return &RoomHandler{
-		db:        db,
+		db:        database,
 		jwtSecret: os.Getenv("JWT_SECRET"),
+		msgSvc:    msgSvc,
 	}
 }
 
@@ -34,7 +38,7 @@ func (h *RoomHandler) getUsernameFromRequest(r *http.Request) string {
 	if username != "" {
 		return username
 	}
-	
+
 	// Try to extract from Authorization Bearer token
 	authHeader := r.Header.Get("Authorization")
 	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
@@ -44,7 +48,7 @@ func (h *RoomHandler) getUsernameFromRequest(r *http.Request) string {
 			return claims.Username
 		}
 	}
-	
+
 	return "anonymous"
 }
 
@@ -58,13 +62,6 @@ type CreateRoomRequest struct {
 // CreateRoomResponse represents room creation response
 type CreateRoomResponse struct {
 	Message string `json:"message"`
-}
-
-// RoomInfo represents room information
-type RoomInfo struct {
-	RoomID   string `json:"roomId"`
-	Roomname string `json:"roomname"`
-	Users    []UserInfo `json:"users"`
 }
 
 // UserInfo represents user in room
@@ -168,8 +165,6 @@ func (h *RoomHandler) GetAllRooms(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
-
 	roomIDs := []string{}
 	for rows.Next() {
 		var roomID string
@@ -178,6 +173,7 @@ func (h *RoomHandler) GetAllRooms(w http.ResponseWriter, r *http.Request) {
 		}
 		roomIDs = append(roomIDs, roomID)
 	}
+	rows.Close()
 
 	// Get room details
 	roomsMap := make(map[string][]UserInfo)
@@ -199,7 +195,6 @@ func (h *RoomHandler) GetAllRooms(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		defer memberRows.Close()
 
 		var users []UserInfo
 		for memberRows.Next() {
@@ -209,6 +204,7 @@ func (h *RoomHandler) GetAllRooms(w http.ResponseWriter, r *http.Request) {
 			}
 			users = append(users, user)
 		}
+		memberRows.Close()
 
 		key := roomID + ":" + roomname
 		roomsMap[key] = users
@@ -239,6 +235,7 @@ func (h *RoomHandler) JoinRoom(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
+
 	if exists {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]bool{"joined": true})
@@ -251,6 +248,11 @@ func (h *RoomHandler) JoinRoom(w http.ResponseWriter, r *http.Request) {
 		`SELECT EXISTS(SELECT 1 FROM rooms WHERE room_id = $1)`,
 		roomID,
 	).Scan(&roomExists)
+	if err != nil {
+		log.Printf("Room check error: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 	if !roomExists {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -270,6 +272,9 @@ func (h *RoomHandler) JoinRoom(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to join room"})
 		return
 	}
+
+	// Broadcast system event (Java parity: "username joined channel")
+	h.broadcastSystemEvent(roomID, username, "joined channel")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"joined": true})
@@ -292,20 +297,33 @@ func (h *RoomHandler) LeaveRoom(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		log.Printf("Leave error: %v", err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to leave room"})
+		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
 	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		// Not a member, but that's ok
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"left": true})
-		return
+	if affected > 0 {
+		// Broadcast system event (Java parity: "username left channel")
+		h.broadcastSystemEvent(roomID, username, "left channel")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"left": true})
+}
+
+// broadcastSystemEvent sends a SYSTEM_DAEMON chat event through the NOTIFY
+// channel so every backend forwards it to local sockets (Java parity).
+func (h *RoomHandler) broadcastSystemEvent(roomID, username, action string) {
+	if h.db == nil {
+		return
+	}
+	event := map[string]interface{}{
+		"content":          username + " " + action,
+		"messageId":        uuid.New().String(),
+		"createdTimestamp": time.Now(),
+		"sender":           "SYSTEM_DAEMON",
+		"type":             "CHAT_MESSAGE",
+		"roomId":           roomID,
+	}
+	websocket.NotifySystem(h.db, roomID, event)
 }

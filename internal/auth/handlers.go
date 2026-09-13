@@ -3,8 +3,10 @@ package auth
 import (
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -26,13 +28,19 @@ type Claims struct {
 type AuthHandler struct {
 	db        *sql.DB
 	jwtSecret string
+	kekBytes  []byte
 }
 
-// NewAuthHandler creates a new auth handler
-func NewAuthHandler(db *sql.DB, jwtSecret string) *AuthHandler {
+// NewAuthHandler creates the auth handler. kekB64 is the base64 key-encryption-key.
+func NewAuthHandler(database *sql.DB, jwtSecret, kekB64 string) *AuthHandler {
+	kek, err := base64.StdEncoding.DecodeString(kekB64)
+	if err != nil || len(kek) != 32 {
+		log.Fatalf("Invalid KEK for auth handler")
+	}
 	return &AuthHandler{
-		db:        db,
+		db:       database,
 		jwtSecret: jwtSecret,
+		kekBytes: kek,
 	}
 }
 
@@ -116,14 +124,26 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // Refresh handles POST /auth/refresh
+// The frontend sends the raw refresh token as the request body (Java parity),
+// so accept both raw string and JSON-wrapped forms.
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
-	var req RefreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+	if err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
+	refreshToken := strings.TrimSpace(string(body))
+	// Try JSON-wrapped too (backward compat)
+	if strings.HasPrefix(refreshToken, "{") {
+		var req RefreshRequest
+		if json.Unmarshal(body, &req) == nil && req.RefreshToken != "" {
+			refreshToken = req.RefreshToken
+		}
+	}
+	// Strip stray quotes
+	refreshToken = strings.Trim(refreshToken, `"`)
 
-	if req.RefreshToken == "" {
+	if refreshToken == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "refreshToken required"})
@@ -131,7 +151,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate refresh token
-	claims, err := ValidateToken(h.jwtSecret, req.RefreshToken)
+	claims, err := ValidateToken(h.jwtSecret, refreshToken)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -155,7 +175,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(LoginResponse{
 		AccessToken:  accessToken,
-		RefreshToken: req.RefreshToken, // Keep same refresh token
+		RefreshToken: refreshToken, // Keep same refresh token
 	})
 }
 
@@ -197,24 +217,39 @@ func (h *AuthHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate Ed25519 keypair
-	privateKey, publicKey, err := crypto.GenerateKeyPair()
+	// Generate Ed25519 keypair (Java-compatible SPKI/PKCS8 encoding)
+	publicKey, privateKey, err := crypto.GenerateSigningKeyPair()
 	if err != nil {
 		log.Printf("Key generation error: %v", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
-	privKeyB64 := crypto.EncodePrivateKey(privateKey)
-	wrappedPrivateKey := crypto.WrapPrivateKey(privKeyB64)
-	_ = crypto.EncodePublicKey(publicKey) // Available for future use
+	privKeyB64, err := crypto.EncodePrivateKeyJava(privateKey)
+	if err != nil {
+		log.Printf("Private key encode error: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	pubKeyB64, err := crypto.EncodePublicKeyJava(publicKey)
+	if err != nil {
+		log.Printf("Public key encode error: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	wrappedPrivateKey, err := crypto.WrapPrivateKey(h.kekBytes, privKeyB64)
+	if err != nil {
+		log.Printf("Key wrap error: %v", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
 
 	// Insert user
 	_, err = h.db.Exec(
 		`INSERT INTO users (username, password, tagline, profile_picture, public_key, wrapped_private_key, timestamp) 
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		req.Username, string(hashedPassword), req.Tagline, req.ProfilePicture,
-		publicKey, wrappedPrivateKey, time.Now(),
+		pubKeyB64, wrappedPrivateKey, time.Now(),
 	)
 	if err != nil {
 		log.Printf("Insert error: %v", err)

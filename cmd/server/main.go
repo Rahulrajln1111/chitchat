@@ -14,7 +14,9 @@ import (
 	"github.com/Rahulrajln1111/chitchat/internal/auth"
 	"github.com/Rahulrajln1111/chitchat/internal/db"
 	"github.com/Rahulrajln1111/chitchat/internal/handlers"
+	"github.com/Rahulrajln1111/chitchat/internal/messages"
 	"github.com/Rahulrajln1111/chitchat/internal/rooms"
+	"github.com/Rahulrajln1111/chitchat/internal/websocket"
 )
 
 // getEnv gets environment variable or returns default value
@@ -53,24 +55,48 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
+	// Encryption keys (Java parity — same keys encrypt/decrypt the same data)
+	// KEK must be 32 bytes (Java SecretKeySpec AES-256); used to wrap user private keys at rest.
+	aesKey := getEnv("ENCRYPTION_SECRET_KEY", "PqVFfVXGuVYGAppV4MmxyaOJUEC55NZCi7JUsBcgBn0=")
+	kek := getEnv("ENCRYPTION_KEK", "/EjTQZ3Y584b7h5jBX0ns7NUQyfKYhmBgO0M876+kfg=")
+	jwtSecret := getEnv("JWT_SECRET", "pDUNdwN5lc5p4QgQLQv0May/qzupHjMB+SfGSJu3XGo=")
+
+	msgSvc, err := messages.NewService(db.GetDB(), aesKey, kek)
+	if err != nil {
+		log.Fatalf("Failed to initialize message crypto: %v", err)
+	}
+	msgSvc.SetJWTSecret(jwtSecret)
+
 	// Create HTTP handlers
 	messageHandler := handlers.NewHandler()
-	authHandler := auth.NewAuthHandler(db.GetDB(), os.Getenv("JWT_SECRET"))
-	roomHandler := rooms.NewRoomHandler(db.GetDB())
+	authHandler := auth.NewAuthHandler(db.GetDB(), jwtSecret, kek)
+	roomHandler := rooms.NewRoomHandler(db.GetDB(), msgSvc)
+
+	// Create WebSocket hub and start PostgreSQL NOTIFY listener (cross-backend fan-out)
+	wsHub := websocket.NewHub(db.GetDB(), msgSvc, jwtSecret)
+	go wsHub.Run()
+	wsHub.StartListener(dbURL)
 
 	// Set up routers
 	mux := http.NewServeMux()
+
+	// WebSocket route (JWT-authenticated)
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		wsHub.ServeWS(w, r)
+	})
 
 	// Static files (frontend) - serve from ./chitchat-frontend/dist
 	frontendDir := os.Getenv("FRONTEND_DIR")
 	if frontendDir == "" {
 		frontendDir = "/home/razz/Desktop/D/Sd/chitchat-frontend/dist"
 	}
-	
-	// API routes (must be registered before static to take priority)
+
 	// Load test routes
 	mux.HandleFunc("/message", messageHandler.PostMessage)
 	mux.HandleFunc("/feed", messageHandler.GetFeed)
+
+	// Chat message history — EXACT Java routes
+	mux.HandleFunc("/rooms/", msgSvc.HandleRoomMessages) // /rooms/{roomId}/messages/recent
 
 	// Auth routes
 	mux.HandleFunc("/auth/login", authHandler.Login)
@@ -84,11 +110,12 @@ func main() {
 	mux.HandleFunc("/room/leave/", roomHandler.LeaveRoom)
 
 	// Serve static files for all other routes
-	// Use a custom handler that never redirects
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Force browsers (esp. mobile) to revalidate HTML so new deploys are picked up;
+		// hashed /assets/* files revalidate cheaply via Last-Modified 304s.
+		w.Header().Set("Cache-Control", "no-cache")
 		// For root path, serve index.html directly with 200
 		if r.URL.Path == "/" {
-			// Serve index.html with correct content type
 			http.ServeFile(w, r, filepath.Join(frontendDir, "index.html"))
 			return
 		}
@@ -101,9 +128,9 @@ func main() {
 	server := &http.Server{
 		Addr:         ":3000",
 		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	// Start server in goroutine
@@ -114,7 +141,7 @@ func main() {
 		}
 	}()
 
-	// Start auto-purge goroutine (every 5 minutes)
+	// Start auto-purge goroutine for load-test messages (every 5 minutes)
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()

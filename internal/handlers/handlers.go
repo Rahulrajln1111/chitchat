@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Rahulrajln1111/chitchat/internal/db"
@@ -72,6 +73,56 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(messages)
+}
+
+// GetRoomMessages handles GET /room/<roomId>/messages
+// Falls back to /feed if room-specific messages not available
+func (h *Handler) GetRoomMessages(w http.ResponseWriter, r *http.Request) {
+	// Extract roomId from path: /room/{roomId}/messages
+	path := r.URL.Path
+	// Expected format: /room/<roomId>/messages
+	parts := strings.Split(strings.TrimPrefix(path, "/room/"), "/")
+	if len(parts) < 2 || parts[1] != "messages" {
+		// Fallback: return all messages (like /feed)
+		ctx := r.Context()
+		messages, err := db.GetAllMessages(ctx)
+		if err != nil {
+			log.Printf("Error fetching messages: %v", err)
+			http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"messages": messages,
+			"timestamp": time.Now().Unix(),
+		})
+		return
+	}
+
+	roomID := parts[0]
+	if roomID == "" {
+		http.Error(w, "Room ID required", http.StatusBadRequest)
+		return
+	}
+
+	// Get limit from query params (default 50)
+	_ = r.URL.Query().Get("limit") // Can be used for pagination later
+
+	// Return recent messages (room-based filtering can be added later)
+	ctx := r.Context()
+	messages, err := db.GetAllMessages(ctx)
+	if err != nil {
+		log.Printf("Error fetching messages: %v", err)
+		http.Error(w, "Failed to fetch messages", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"roomId":    roomID,
+		"messages":  messages,
+		"timestamp": time.Now().Unix(),
+	})
 }
 
 // generateUUID creates a new UUID v4 string
