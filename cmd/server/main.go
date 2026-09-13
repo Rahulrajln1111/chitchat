@@ -61,10 +61,10 @@ func main() {
 	// Set up routers
 	mux := http.NewServeMux()
 
-	// Static files (frontend) - serve from /home/student/chitchat-frontend/dist
+	// Static files (frontend) - serve from ./chitchat-frontend/dist
 	frontendDir := os.Getenv("FRONTEND_DIR")
 	if frontendDir == "" {
-		frontendDir = "/home/student/chitchat-frontend/dist"
+		frontendDir = "/home/razz/Desktop/D/Sd/chitchat-frontend/dist"
 	}
 	
 	// API routes (must be registered before static to take priority)
