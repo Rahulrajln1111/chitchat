@@ -58,6 +58,11 @@ func Close() {
 	}
 }
 
+// GetDB returns the database connection for use by handlers
+func GetDB() *sql.DB {
+	return db
+}
+
 // InsertMessage inserts a new message into the database
 func InsertMessage(ctx context.Context, id string, clientName, msg string, timestamp time.Time) error {
 	query := `INSERT INTO load_test_messages(id, client_name, msg, "timestamp") VALUES ($1, $2, $3, $4)`
