@@ -131,7 +131,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate refresh token
-	claims, err := validateToken(h.jwtSecret, req.RefreshToken)
+	claims, err := ValidateToken(h.jwtSecret, req.RefreshToken)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -254,7 +254,7 @@ func generateToken(secret, username, typ string, duration time.Duration) string 
 	return signed
 }
 
-func validateToken(secret, tokenString string) (*Claims, error) {
+func ValidateToken(secret, tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		return []byte(secret), nil
 	})

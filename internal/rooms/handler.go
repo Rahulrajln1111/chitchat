@@ -5,20 +5,47 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/Rahulrajln1111/chitchat/internal/auth"
 	"github.com/google/uuid"
 )
 
 // RoomHandler handles room-related requests
 type RoomHandler struct {
-	db *sql.DB
+	db        *sql.DB
+	jwtSecret string
 }
 
 // NewRoomHandler creates a new room handler
 func NewRoomHandler(db *sql.DB) *RoomHandler {
-	return &RoomHandler{db: db}
+	return &RoomHandler{
+		db:        db,
+		jwtSecret: os.Getenv("JWT_SECRET"),
+	}
+}
+
+// getUsernameFromRequest extracts username from JWT token or X-Username header
+func (h *RoomHandler) getUsernameFromRequest(r *http.Request) string {
+	// First try X-Username header (for backward compatibility)
+	username := r.Header.Get("X-Username")
+	if username != "" {
+		return username
+	}
+	
+	// Try to extract from Authorization Bearer token
+	authHeader := r.Header.Get("Authorization")
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := auth.ValidateToken(h.jwtSecret, tokenString)
+		if err == nil {
+			return claims.Username
+		}
+	}
+	
+	return "anonymous"
 }
 
 // CreateRoomRequest represents room creation request
@@ -66,11 +93,8 @@ func (h *RoomHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For simplicity, we'll use a default username from header or "anonymous"
-	username := r.Header.Get("X-Username")
-	if username == "" {
-		username = "anonymous"
-	}
+	// Get username from JWT token or header
+	username := h.getUsernameFromRequest(r)
 
 	// Check all participants exist
 	if len(req.Participants) > 0 {
@@ -107,7 +131,7 @@ func (h *RoomHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 
 	// Add creator as admin
 	_, err = h.db.Exec(
-		`INSERT INTO users_rooms_roles (id_username, id_room_id, role_type) VALUES ($1, $2, $3)`,
+		`INSERT INTO rooms_users_roles (username, room_id, role_type) VALUES ($1, $2, $3)`,
 		username, roomID, "ADMIN",
 	)
 	if err != nil {
@@ -118,7 +142,7 @@ func (h *RoomHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	for _, participant := range req.Participants {
 		if participant != username {
 			h.db.Exec(
-				`INSERT INTO users_rooms_roles (id_username, id_room_id, role_type) VALUES ($1, $2, $3)`,
+				`INSERT INTO rooms_users_roles (username, room_id, role_type) VALUES ($1, $2, $3)`,
 				participant, roomID, "MEMBER",
 			)
 		}
@@ -132,14 +156,11 @@ func (h *RoomHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 
 // GetAllRooms handles GET /room/all
 func (h *RoomHandler) GetAllRooms(w http.ResponseWriter, r *http.Request) {
-	username := r.Header.Get("X-Username")
-	if username == "" {
-		username = "anonymous"
-	}
+	username := h.getUsernameFromRequest(r)
 
 	// Get room IDs for this user
 	rows, err := h.db.Query(
-		`SELECT ur.id_room_id FROM users_rooms_roles ur WHERE ur.id_username = $1`,
+		`SELECT room_id FROM rooms_users_roles WHERE username = $1`,
 		username,
 	)
 	if err != nil {
@@ -172,7 +193,7 @@ func (h *RoomHandler) GetAllRooms(w http.ResponseWriter, r *http.Request) {
 
 		// Get members
 		memberRows, err := h.db.Query(
-			`SELECT id_username, role_type FROM users_rooms_roles WHERE id_room_id = $1`,
+			`SELECT username, role_type FROM rooms_users_roles WHERE room_id = $1`,
 			roomID,
 		)
 		if err != nil {
@@ -205,15 +226,12 @@ func (h *RoomHandler) JoinRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := r.Header.Get("X-Username")
-	if username == "" {
-		username = "anonymous"
-	}
+	username := h.getUsernameFromRequest(r)
 
 	// Check if already member
 	var exists bool
 	err := h.db.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM users_rooms_roles WHERE id_username = $1 AND id_room_id = $2)`,
+		`SELECT EXISTS(SELECT 1 FROM rooms_users_roles WHERE username = $1 AND room_id = $2)`,
 		username, roomID,
 	).Scan(&exists)
 	if err != nil {
@@ -242,7 +260,7 @@ func (h *RoomHandler) JoinRoom(w http.ResponseWriter, r *http.Request) {
 
 	// Add as member
 	_, err = h.db.Exec(
-		`INSERT INTO users_rooms_roles (id_username, id_room_id, role_type) VALUES ($1, $2, $3)`,
+		`INSERT INTO rooms_users_roles (username, room_id, role_type) VALUES ($1, $2, $3)`,
 		username, roomID, "MEMBER",
 	)
 	if err != nil {
@@ -265,14 +283,11 @@ func (h *RoomHandler) LeaveRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username := r.Header.Get("X-Username")
-	if username == "" {
-		username = "anonymous"
-	}
+	username := h.getUsernameFromRequest(r)
 
 	// Delete membership
 	result, err := h.db.Exec(
-		`DELETE FROM users_rooms_roles WHERE id_username = $1 AND id_room_id = $2`,
+		`DELETE FROM rooms_users_roles WHERE username = $1 AND room_id = $2`,
 		username, roomID,
 	)
 	if err != nil {
