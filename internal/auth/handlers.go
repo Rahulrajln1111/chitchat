@@ -113,7 +113,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate tokens
-	accessToken := generateToken(h.jwtSecret, req.Username, "access", 15*time.Minute)
+	accessToken := generateToken(h.jwtSecret, req.Username, "access", 8*time.Hour) // Java parity: 8h access
 	refreshToken := generateToken(h.jwtSecret, req.Username, "refresh", 7*24*time.Hour)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -170,7 +170,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate new access token
-	accessToken := generateToken(h.jwtSecret, claims.Username, "access", 15*time.Minute)
+	accessToken := generateToken(h.jwtSecret, claims.Username, "access", 8*time.Hour) // Java parity: 8h access
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(LoginResponse{
