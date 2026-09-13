@@ -29,8 +29,10 @@ func Init(connectionString string) error {
 	}
 
 	// Configure connection pool
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
+	// 3 backends x 12 conns = 36 + WS listeners — fits PG's max_connections=80
+	// and keeps PG's per-connection memory inside VM 2292's 512MB cgroup (shared with PG)
+	db.SetMaxOpenConns(12)
+	db.SetMaxIdleConns(6)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	// Verify connection
