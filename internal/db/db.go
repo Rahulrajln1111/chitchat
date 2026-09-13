@@ -2,41 +2,66 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/lib/pq"
 )
 
-var pool *pgxpool.Pool
+var db *sql.DB
 
-// Init initializes the PostgreSQL connection pool
+// Init initializes the PostgreSQL connection
 func Init(connectionString string) error {
 	var err error
-	pool, err = pgxpool.New(context.Background(), connectionString)
+	// Remove pgx-specific params, use standard lib/pq format
+	connStr := connectionString
+	if connStr == "" {
+		connStr = "postgres://chitchat:secret123@localhost:5432/chitchat?sslmode=disable"
+	}
+	
+	log.Printf("Connecting to database with: %s...", connStr[:min(50, len(connStr))])
+	
+	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		return fmt.Errorf("unable to create connection pool: %w", err)
+		return fmt.Errorf("unable to open database: %w", err)
 	}
 
+	// Configure connection pool
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
 	// Verify connection
-	if err := pool.Ping(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("unable to ping database: %w", err)
 	}
 
+	log.Println("Database connection established")
 	return nil
 }
 
-// Close closes the connection pool
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// Close closes the database connection
 func Close() {
-	if pool != nil {
-		pool.Close()
+	if db != nil {
+		db.Close()
 	}
 }
 
 // InsertMessage inserts a new message into the database
 func InsertMessage(ctx context.Context, id string, clientName, msg string, timestamp time.Time) error {
 	query := `INSERT INTO load_test_messages(id, client_name, msg, "timestamp") VALUES ($1, $2, $3, $4)`
-	_, err := pool.Exec(ctx, query, id, clientName, msg, timestamp)
+	_, err := db.ExecContext(ctx, query, id, clientName, msg, timestamp)
 	return err
 }
 
@@ -47,8 +72,8 @@ func GetAllMessages(ctx context.Context) ([]struct {
 	Msg        string    `json:"msg"`
 	Timestamp  time.Time `json:"timestamp"`
 }, error) {
-	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY id ASC`
-	rows, err := pool.Query(ctx, query)
+	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY id ASC LIMIT 10000`
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +105,13 @@ func GetAllMessages(ctx context.Context) ([]struct {
 // PurgeOldMessages deletes messages older than the specified duration
 func PurgeOldMessages(ctx context.Context, olderThan time.Time) (int64, error) {
 	query := `DELETE FROM load_test_messages WHERE "timestamp" < $1`
-	result, err := pool.Exec(ctx, query, olderThan)
+	result, err := db.ExecContext(ctx, query, olderThan)
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected(), nil
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rowsAffected, nil
 }
