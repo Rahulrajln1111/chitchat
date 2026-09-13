@@ -93,19 +93,19 @@ func GetAllMessages(ctx context.Context) ([]struct {
 	Msg        string    `json:"msg"`
 	Timestamp  time.Time `json:"timestamp"`
 }, error) {
-	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY id ASC LIMIT 10000`
+	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY "timestamp" ASC, id ASC`
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var messages []struct {
+	messages := make([]struct {
 		ID         string    `json:"id"`
 		ClientName string    `json:"clientName"`
 		Msg        string    `json:"msg"`
 		Timestamp  time.Time `json:"timestamp"`
-	}
+	}, 0)
 
 	for rows.Next() {
 		var m struct {
