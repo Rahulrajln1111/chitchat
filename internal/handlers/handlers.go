@@ -10,15 +10,18 @@ import (
 	"time"
 
 	"github.com/Rahulrajln1111/chitchat/internal/db"
+	"github.com/Rahulrajln1111/chitchat/internal/ingest"
 	"github.com/Rahulrajln1111/chitchat/internal/models"
 )
 
 // Handler holds the HTTP handlers
-type Handler struct{}
+type Handler struct {
+	store *ingest.Store
+}
 
-// NewHandler creates a new handler instance
-func NewHandler() *Handler {
-	return &Handler{}
+// NewHandler creates a new handler instance with the journal-backed store
+func NewHandler(store *ingest.Store) *Handler {
+	return &Handler{store: store}
 }
 
 // PostMessage handles POST /message
@@ -47,13 +50,12 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		id = generateUUID()
 	}
 
-	// Batched insert: requests are grouped (~20ms window) into multi-row
-	// INSERTs. Response returns only after the batch commits, so a 2xx still
-	// means persisted. ON CONFLICT DO NOTHING keeps retries idempotent.
-	ctx := r.Context()
-	err := db.EnqueueMessage(ctx, id, req.ClientName, req.Msg, time.Now())
-	if err != nil {
-		log.Printf("Error inserting message: %v", err)
+	// Durable-ack ingest: append to local journal (fsync, group commit),
+	// return 200 immediately. Background writer persists to PostgreSQL with
+	// retry-until-success; replay on restart covers crashes. A 2xx therefore
+	// still guarantees the message will appear in /feed.
+	if err := h.store.Ingest(id, req.ClientName, req.Msg); err != nil {
+		log.Printf("Error journalling message: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{
@@ -62,21 +64,10 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status := "stored"
-	if err == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":     id,
-			"status": status,
-		})
-		return
-	}
-	// unreachable error branches kept for clarity
-	log.Printf("Error inserting message: %v", err)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusInternalServerError)
-	json.NewEncoder(w).Encode(map[string]string{
-		"error": "storage failure",
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":     id,
+		"status": "stored",
 	})
 }
 

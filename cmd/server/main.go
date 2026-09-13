@@ -13,6 +13,7 @@ import (
 
 	"github.com/Rahulrajln1111/chitchat/internal/auth"
 	"github.com/Rahulrajln1111/chitchat/internal/db"
+	"github.com/Rahulrajln1111/chitchat/internal/ingest"
 	"github.com/Rahulrajln1111/chitchat/internal/handlers"
 	"github.com/Rahulrajln1111/chitchat/internal/messages"
 	"github.com/Rahulrajln1111/chitchat/internal/rooms"
@@ -55,9 +56,10 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
-	// Start batched insert writer for /message (groups inserts into multi-row
-	// statements — removes the per-row commit bottleneck under heavy load)
-	db.StartBatchWriter(12)
+	// Journal-backed ingest for /message: local durable append -> instant 200,
+	// background writer persists batches to PostgreSQL (retry-until-success,
+	// replay on restart). Replaces the previous wait-for-DB-commit handler.
+	ingestStore := ingest.Start(getEnv("JOURNAL_PATH", "./message.journal"))
 
 	// Encryption keys (Java parity — same keys encrypt/decrypt the same data)
 	// KEK must be 32 bytes (Java SecretKeySpec AES-256); used to wrap user private keys at rest.
@@ -72,7 +74,7 @@ func main() {
 	msgSvc.SetJWTSecret(jwtSecret)
 
 	// Create HTTP handlers
-	messageHandler := handlers.NewHandler()
+	messageHandler := handlers.NewHandler(ingestStore)
 	authHandler := auth.NewAuthHandler(db.GetDB(), jwtSecret, kek)
 	roomHandler := rooms.NewRoomHandler(db.GetDB(), msgSvc)
 
