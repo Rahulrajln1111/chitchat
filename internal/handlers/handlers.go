@@ -47,10 +47,11 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 		id = generateUUID()
 	}
 
-	// Insert with ON CONFLICT DO NOTHING: duplicate IDs from retries are stored
-	// once; response is still 200 so load-generator retries are not penalized.
+	// Batched insert: requests are grouped (~20ms window) into multi-row
+	// INSERTs. Response returns only after the batch commits, so a 2xx still
+	// means persisted. ON CONFLICT DO NOTHING keeps retries idempotent.
 	ctx := r.Context()
-	inserted, err := db.InsertMessageIdempotent(ctx, id, req.ClientName, req.Msg, time.Now())
+	err := db.EnqueueMessage(ctx, id, req.ClientName, req.Msg, time.Now())
 	if err != nil {
 		log.Printf("Error inserting message: %v", err)
 		w.Header().Set("Content-Type", "application/json")
@@ -62,13 +63,20 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := "stored"
-	if !inserted {
-		status = "duplicate" // already persisted from an earlier attempt
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":     id,
+			"status": status,
+		})
+		return
 	}
+	// unreachable error branches kept for clarity
+	log.Printf("Error inserting message: %v", err)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":     id,
-		"status": status,
+	w.WriteHeader(http.StatusInternalServerError)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": "storage failure",
 	})
 }
 

@@ -55,6 +55,10 @@ func main() {
 
 	log.Println("Connected to PostgreSQL")
 
+	// Start batched insert writer for /message (groups inserts into multi-row
+	// statements — removes the per-row commit bottleneck under heavy load)
+	db.StartBatchWriter(12)
+
 	// Encryption keys (Java parity — same keys encrypt/decrypt the same data)
 	// KEK must be 32 bytes (Java SecretKeySpec AES-256); used to wrap user private keys at rest.
 	aesKey := getEnv("ENCRYPTION_SECRET_KEY", "PqVFfVXGuVYGAppV4MmxyaOJUEC55NZCi7JUsBcgBn0=")
