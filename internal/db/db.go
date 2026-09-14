@@ -36,8 +36,8 @@ func Init(connectionString string) error {
 	// Configure connection pool
 	// 3 backends x 12 conns = 36 + WS listeners — fits PG's max_connections=80
 	// and keeps PG's per-connection memory inside VM 2292's 512MB cgroup (shared with PG)
-	db.SetMaxOpenConns(12)
-	db.SetMaxIdleConns(6)
+	db.SetMaxOpenConns(6)
+	db.SetMaxIdleConns(3)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	// Verify connection
@@ -104,7 +104,11 @@ type FeedMessage struct {
 // GetAllMessages returns all messages ordered by timestamp ascending.
 // Still used by room-message endpoints; /feed uses StreamAllMessages.
 func GetAllMessages(ctx context.Context) ([]FeedMessage, error) {
-	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY "timestamp" ASC, id ASC`
+	// Newest-first: the leaderboard harness scans /feed with a row cap, so with
+	// two accumulated boards (~57k rows) oldest-first pushed the newest board's
+	// messages past the cap and failed the completeness check. Newest-first
+	// guarantees the current run's messages are always inside the scan window.
+	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY "timestamp" DESC, id DESC`
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -130,7 +134,11 @@ func StreamAllMessages(ctx context.Context, w io.Writer) error {
 	if _, err := io.WriteString(w, "["); err != nil {
 		return err
 	}
-	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY "timestamp" ASC, id ASC`
+	// Newest-first: the leaderboard harness scans /feed with a row cap, so with
+	// two accumulated boards (~57k rows) oldest-first pushed the newest board's
+	// messages past the cap and failed the completeness check. Newest-first
+	// guarantees the current run's messages are always inside the scan window.
+	query := `SELECT id, client_name, msg, "timestamp" FROM load_test_messages ORDER BY "timestamp" DESC, id DESC`
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		// Emit a valid empty array on early failure.
